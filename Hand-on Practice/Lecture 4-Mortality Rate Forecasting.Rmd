@@ -1,0 +1,512 @@
+---
+title: "Time Series Analysis in Health Research"
+subtitle: "Forecasting of Weekly Mortality Rate in Canada"
+author: "Erfan Hoque \\
+  
+  Dept. of Community Health and Epidemiology \\
+  
+  University of Saskatchewan."
+  
+date: "SEA 24th Annual Symposium Workshop, September 26, 2025"
+output:
+  pdf_document: default
+  html_document:
+    keep_md: true
+---
+
+We will work in *fpp3* package. Load the library *fpp3*. If *fpp3* package is not installed, then we need to install it first and then load the library. 
+
+```{r setup, error=FALSE, warning=FALSE, message=FALSE}
+library(fpp3)
+library(dplyr)
+library(fable.prophet) # needed for Prophet model
+```
+
+This document is intended to serve as a rough template for what we covered in the last lectures on time series analysis in R.
+
+# Weekly mortality Data
+
+## Data Discription: 
+
+This dataset (weekly mortality Data) provides weekly age-standardized mortality rates across Canadian provinces, disaggregated by sex, beginning in 2019. The rates are standardized using the 2011 Canadian population, allowing for consistent comparisons across regions and time periods regardless of demographic shifts.
+
+Publisher: Statistics Canada Release (<https://www150.statcan.gc.ca/t1/tbl1/en/tv.action?pid=1310087901>)
+
+Frequency: Weekly 
+
+Geography: Canada and Provinces (excluding Territories)
+
+## Set Directory 
+
+To check your current working directory in R, use: ```getwd()```
+
+This will return the path of the directory where R is currently reading and writing files like this
+
+```{r, eval=FALSE}
+getwd()
+```
+
+## Read Data 
+
+To read a different data you need to change the name of the data based on the data file name. 
+
+```{r}
+mortality <- read.csv("mortality_model.csv")
+```
+
+## tisbble objects
+
+We need to create the data in *tisbble* object to use the functions from *fpp3* package.
+
+```{r}
+mortality_ts <- mortality |>
+  mutate(week=yearweek(week),
+         Date=as.Date(Date)) |>
+  as_tsibble(index = week)
+mortality_ts |>
+  head(10) # check first few rows of the data
+```
+
+# Time series plot, patterns and decomposition
+
+## Time plot
+
+```{r, fig.height=4, fig.width=8, warning=FALSE}
+mortality_ts %>% autoplot(Rate) +
+  labs(title = "Weekly Mortality rate in Canada",
+         y="Mortality rates per 100,000")
+```
+
+We can see some short trend and seasonality in the mortality rate. 
+
+## Seasonal plots
+A seasonal plot is similar to a time plot except that the data are plotted against the individual ``seasons" in which the data were observed. This enables the underlying seasonal pattern to be seen more clearly, and also allows any substantial departures from the seasonal pattern to be easily identified.
+
+```{r, fig.height=4, fig.width=8, warning=FALSE}
+mortality_ts %>% gg_season(Rate, labels="right")
+```
+
+## Autocorrelation
+
+When data have a trend, the autocorrelations for small lags tend to be large and positive. When data are seasonal, the autocorrelations will be larger at the seasonal lags (i.e., at multiples of the seasonal frequency). When data are trended and seasonal, we see a combination of these effects.
+
+```{r, fig.height=4, fig.width=8}
+mortality_ts %>% 
+  ACF(Rate, lag_max = 52) %>% autoplot()
+```
+
+## Time series decomposition
+STL (Seasonal and Trend decomposition using Loess) is a versatile and robust method for decomposing time series.
+
+```{r}
+dcmp <- mortality_ts %>%
+  model(stl = STL(Rate))
+components(dcmp)
+```
+
+### Trend-adjustment
+
+```{r}
+mortality_ts %>%
+  autoplot(Rate, color='gray') +
+  autolayer(components(dcmp), trend, color='#D55E00') +
+  labs(y = "Rate", title = "Weekly mortality rate in Canada")
+```
+
+### Seasonal-adjustment
+
+```{r}
+mortality_ts %>%
+  autoplot(Rate, color='gray') +
+  autolayer(components(dcmp), season_adjust, color='#0072B2') +
+  labs(y = "Rate", title = "Weekly mortality rate in Canada")
+```
+
+## Classical Decomposition
+The traditional way to do time series decomposition is called `Classical decomposition`. The simplest estimate of the trend-cycle uses *moving averages* which is an average of nearby points.
+
+```{r}
+mortality_ts_decom <- mortality_ts |>
+  mutate(
+    `3-MA` = slider::slide_dbl(Rate, mean,
+                .before = 1, .after = 1, .complete = TRUE),
+    `5-MA` = slider::slide_dbl(Rate, mean,
+                .before = 2, .after = 2, .complete = TRUE)
+  )
+
+mortality_ts_decom  |>
+  head(10)
+
+# plot of 3-MA
+mortality_ts_decom |>
+  autoplot(Rate) +
+  geom_line(aes(y = `3-MA`), colour = "#D55E00")+
+  labs(title = "3-MA smoothing")
+# plot of 5-MA
+mortality_ts_decom |>
+  autoplot(Rate) +
+  geom_line(aes(y = `5-MA`), colour = "#D55E00")+
+  labs(title = "5-MA smoothing")
+```
+
+# Forecasting Models
+
+## Simple forecasting methods
+The `model()` function trains models to data. We are going to forecast using Mean, Naive and Seasonal Naive method. 
+
+```{r}
+mortality_fit <-  mortality_ts %>%
+  model(
+    Seasonal_naive = SNAIVE(Rate),
+    Naive = NAIVE(Rate),
+    Mean = MEAN(Rate)
+  )
+```
+
+We can now produce forecasts using the fitted models.
+
+```{r}
+mortality_fc <- mortality_fit %>%
+  forecast(h = "1 years")
+print(mortality_fc, n = 4)
+```
+
+```{r}
+mortality_fc %>%
+  autoplot(mortality_ts, level = NULL) +
+  labs(title = "Weekly mortality in Canada",
+       y = "Mortality rates per 100,000") +
+  guides(colour = guide_legend(title = "Forecast"))
+```
+
+## Residual diagnostics
+
+It is very important to do the residual diagnostic after fitting any model to check whether the residual assumptions have been satisfied or not. 
+
+```{r, warning=FALSE}
+fit.naive <- mortality_ts %>% model(NAIVE(Rate))
+gg_tsresiduals(fit.naive)
+```
+
+Here, based on the plots, we can say the residual assumptions (uncorrelated,
+mean zero, constant variance) have been satisfied for Naive model. 
+
+## Tests for autocorrelation
+Moreover, we can do Box-Pierce or Ljung-Box test to see whether the residuals are significantly different from a zero set. 
+
+H\_0: the series is white noise vs H\_1: the series is not white noise.
+
+```{r}
+augment(fit.naive) %>%
+  features(.resid, ljung_box, lag=10, dof=0)
+```
+
+The results are not significant (i.e., the p-values are relatively large). Thus, we
+can conclude that the residuals are not distinguishable from a white noise series.
+
+## ARIMA / SARIMA models
+
+Before fitting the ARIMA model, it is important to check the stationary of the data. If the data is non-stationary, then we need to make it stationary using the idea of differencing. Differencing helps to stabilize the mean (one way to make a non-stationary time series stationary).
+
+```{r}
+mortality_ts %>% ACF(Rate) %>% autoplot() +
+    labs(title = "Weekly mortality in Canada without differencing",
+       y = "Mortality rates per 100,000")
+```
+
+```{r}
+mortality_ts %>% ACF(difference(Rate)) %>% autoplot() +
+    labs(title = "Weekly mortality in Canada with differencing",
+       y = "Mortality rates per 100,000")
+```
+
+First order differencing seems make the mortality data stationary. But still there are some pattern left over. 
+
+Now let's fit the ARIMA/SARIMA model. The *ARIMA* frunction form *fpp3* package does everything together (checking for stationarity of the data, doing any differencing if needed and then fitting the model using ARIMA or SARIMA based on data)
+
+```{r}
+fit.arima <- mortality_ts |>
+  model(ARIMA(Rate))
+report(fit.arima)
+```
+
+We have SARIMA(1,1,2)(1,1,0)[52] model for this data. We have $d=1$ means there was first order differencing on non-seasonal part and $D=1$ means first order differencing on seasonal part. 
+
+Let's check the residual.
+
+```{r}
+gg_tsresiduals(fit.arima)
+```
+
+Here, based on the plots, we can say the residual assumptions (uncorrelated,
+mean zero, constant variance) have been satisfied for ARIMA model.
+
+```{r}
+augment(fit.arima) %>%
+  features(.innov, ljung_box, lag = 36, dof=4)
+```
+
+The results are not significant (i.e., the p-values are relatively large). Thus, we
+can conclude that the residuals are not distinguishable from a white noise series.
+
+Let's forecast mortality rate for next one year (52 weeks).
+
+```{r}
+fit.arima %>% forecast(h = 52) %>%  # h = "1 years"
+  autoplot(mortality_ts, level=NULL) +
+  labs(y = "Rate", title = "Weekly mortality rate in Canada using SARIMA")
+```
+
+## Simple Exponential Smoothing 
+
+```{r, warning=FALSE}
+fit.ets <- mortality_ts %>% model(ETS(Rate))
+report(fit.ets)
+```
+
+```{r, warning=FALSE}
+fit.ets %>% 
+  forecast(h = "1 years") %>% 
+  autoplot(mortality_ts, level=NULL)+
+  labs(title="Weekly mortality rate in Canada using ETS", y="Rate")
+```
+
+## Neural Netwrok Model 
+
+Now, we will use Neural network autoregression model to forecast mortality rate using `NNETAR()` function that fits an NNAR($p,P,k$)$_m$ model. If $p$ and $P$ are not specified, they are automatically selected.
+
+```{r, echo=TRUE}
+fit.nn <- mortality_ts %>% model(NNETAR(Rate))
+fit.nn
+```
+
+The result provides a NNAR(2,1,2)[52] model for mortality rate. Here, the last 2 observations are used as predictors, and there are 2 neurons in the hidden layer.
+
+Let's check the residual.
+
+```{r, warning=FALSE}
+gg_tsresiduals(fit.nn)
+```
+
+Let's forecast mortality rate for next one year (52 weeks).
+
+```{r}
+fit.nn %>% forecast(h="1 years", times=1) %>%
+  autoplot(mortality_ts, level=NULL) +
+  labs(x = "Week", y = "Rate", title = "Weekly mortality rate in Canada")
+```
+
+## Prophet Model
+Prophet is an open-source forecasting tool developed by Facebook for time series forecasting. Prophet model is available via the `fable.prophet` package. 
+
+```{r, warning=FALSE}
+fit.ph <- mortality_ts %>% 
+  model(prophet(Rate ~ season(period = 52, order = 10)))
+fit.ph |> gg_tsresiduals() # check residual
+#components(fit.ph) %>% autoplot()
+```
+
+Let's forecast mortality rate for next one year (52 weeks).
+
+```{r, echo=TRUE, warning=FALSE}
+fit.ph %>% forecast(h = "1 years") %>% 
+  autoplot(mortality_ts, level=NULL) + 
+  labs(x = "Week", y = "Rate", title = "Weekly mortality rate in Canada")
+```
+
+## Forecast accuracy: Comparing all models 
+
+We can fit all model together in one function and compare them based on some accuracy measures. Then choose the best one and forecast based on the best model. 
+
+```{r, warning=FALSE}
+mortality_fit <-  mortality_ts %>%
+  model(
+    Seasonal_naive = SNAIVE(Rate),
+    Naive = NAIVE(Rate),
+    Mean = MEAN(Rate),
+    Arima = ARIMA(Rate),
+    ETS = ETS(Rate),
+    NNAR = NNETAR(Rate),
+    #Prophet = prophet(Rate)
+    Prophet = prophet(Rate ~ season(period = 52, order = 10))
+  )
+```
+
+We can now produce forecasts for next 1 years (52 weeks) using the fitted models.
+
+```{r, warning=FALSE}
+mortality_fc <- mortality_fit %>%
+  forecast(h = "1 years", times=1)
+
+mortality_fc %>%
+  autoplot(mortality_ts, level = NULL) +
+  labs(title = "Weekly mortality in Canada",
+       y = "Mortality rates per 100,000") +
+  guides(colour = guide_legend(title = "Forecast"))
+```
+
+Let's compare all models.
+
+```{r}
+accuracy(mortality_fit)
+```
+
+Based on the accuracy measures (say, RMSE, MAE, MAPE, MASE), it is found that Neural net and ARIMA models provide better forecasting performance compare to other models.
+
+
+# Time Series Regression
+
+Now, we are going to do the time series regression models. We will forecast the weekly mortality rate based on some other predictor, say mean precipitation and temperature of week, trend of the data, any intervention effect (e.g. Covid-19 effect) and so on. We need to assume that morality rate has a linear relationship with these predictors. 
+
+First let's look at the time plot again. 
+
+```{r}
+peak_time <- as.Date("2020-03-17")
+mortality_ts %>% autoplot(Rate) +
+  geom_vline(xintercept = peak_time, linetype = "dashed", color = "red")+
+  annotate("text", x = peak_time + 300, y = 18, label = "COVID-19 Emergency", 
+           vjust = 2, color = "red", angle = 0)
+```
+
+Now, let's look at the relationship among variables. 
+
+```{r}
+mortality_ts %>%
+  select(Rate, tem_CA, pre_CA, week) %>% pivot_longer(-week) |>
+  ggplot(aes(week, value, colour = name)) +
+  geom_line() + facet_grid(name ~ ., scales = "free_y") +
+  guides(colour = "none") + labs(y=" ")
+```
+
+Let's see the relation between weekly mortality rate and weekly mean temperature. 
+
+```{r ConsInc2, echo=TRUE}
+mortality_ts %>%
+  ggplot(aes(y = Rate, x = tem_CA)) +
+  labs(x = "Temperature", y = "Mortality rate in Canada") +
+  geom_point() + geom_smooth(method = "lm", se = FALSE)
+```
+
+Let's fit the time series regression model.
+
+```{r}
+fit_MR <- mortality_ts %>%
+  model(lm = TSLM(Rate ~ tem_CA + pre_CA))
+report(fit_MR)
+```
+
+Let's fit the model using other covariates/predictors, say Covid-19 intervention effect, trend variable (already built in *fpp3* package as *trend()*)
+
+```{r}
+# create dummy for Covid-19 intervention effect
+mortality_ts <- mortality_ts |> 
+  mutate(covid19=ifelse(Date<as.Date("2020-03-17"),0,1)) 
+
+fit_mortality <- mortality_ts |>
+  model(TSLM(Rate ~ tem_CA + pre_CA + covid19 + trend()))
+report(fit_mortality)
+
+# Check the fitted values
+augment(fit_mortality) |>
+  ggplot(aes(x = week)) +
+  geom_line(aes(y = Rate, colour = "Data")) +
+  geom_line(aes(y = .fitted, colour = "Fitted")) +
+  labs(y = NULL,
+    title = "Weekly Mortality rate in Canada"
+  ) +
+  scale_colour_manual(values=c(Data="black",Fitted="#D55E00")) +
+  guides(colour = guide_legend(title = NULL))
+```
+
+## Residual diagnostics
+
+It is very important to do residual diagnostic after fitting the regression model so that we can verify the assumptions (residual's are uncorrelated, zero mean, constant variance, uncorrelated with other predictor).
+
+```{r}
+fit_mortality |> gg_tsresiduals(lag=52)
+``` 
+
+\textcolor{red}{By looking at the auto correlation function of residuals, we can see still some correlation left in the residuals!} 
+
+\textcolor{blue}{What to do then??}
+
+\textcolor{blue}{Solution: we can use Dynamic regression model.}
+
+## Dynamic regression models
+
+```{r}
+mortality_ts %>%
+  select(-Date) %>%
+  gather(key='variable', value='value') %>%
+  ggplot(aes(y=value, x=week, group=variable, colour=variable)) +
+  geom_line() + facet_grid(variable ~ ., scales='free_y') +
+  labs(y="",title ="Weekly mortality rate in Canada") +
+  guides(colour="none")
+```  
+
+```{r}
+fit.dyn <- mortality_ts %>% model(ARIMA(Rate ~ tem_CA + pre_CA+ covid19+ trend()))
+report(fit.dyn)
+
+# Check the fitted values
+augment(fit.dyn) |>
+  ggplot(aes(x = week)) +
+  geom_line(aes(y = Rate, colour = "Data")) +
+  geom_line(aes(y = .fitted, colour = "Fitted")) +
+  labs(y = NULL,
+    title = "Weekly Mortality rate in Canada"
+  ) +
+  scale_colour_manual(values=c(Data="black",Fitted="#D55E00")) +
+  guides(colour = guide_legend(title = NULL))
+
+augment(fit.dyn) |>
+  ggplot(aes(x = Rate, y = .fitted)) +
+  geom_point() +
+  labs(
+    y = "Fitted (predicted values)",
+    x = "Data (actual values)",
+    title = "Weekly mortality rate in Canada"
+  ) +
+  geom_abline(intercept = 0, slope = 1)
+```
+
+## Residual diagnostics
+
+Recall that, in dynamic regression we have two errors: regression error ($\eta_t,$ will show some correlation) and Arima error ($\epsilon_t,$ will show no significant correlation).
+
+```{r}
+# regression error
+residuals(fit.dyn, type='regression') %>%
+  gg_tsdisplay(.resid, plot_type = 'partial') +
+  labs(title = "Regression errors")
+# Arima error
+residuals(fit.dyn, type='innovation') %>%
+  gg_tsdisplay(.resid, plot_type = 'partial') +
+  labs(title = "ARIMA errors")
+```
+
+\textcolor{blue}{Residuals seems white noise, means no significant correlation left!}
+
+```{r}
+augment(fit.dyn) |>
+  features(.innov, ljung_box,lag = 52)
+```
+
+The results are not significant (i.e., the p-values are relatively large). Thus, we
+can conclude that the residuals are not distinguishable from a white noise series.
+
+
+\textbf{Comment:} Overall, it shows that the dynamic regression perform better than the time series linear  regression. 
+
+# Interactive graphics for Time Series data: 
+
+We are trying to developed interactive shiny graphics to address these issues for several of the most common time series data analyses. The interactive shiny graphics is used to generate an interactive visualization environment that contains several distinct graphics, many of which are updated in response to user input. These visualizations reduce the burden of exploratory analyses and can serve as a useful tool for the communication of results to non-statisticians.
+
+## Link (still under working)
+
+\textcolor{blue}{<https://syedrizvi05.shinyapps.io/TimeSeries/>}
+
+# Acknowledgement: 
+
+This document was prepared with the help of my research student, *Syed Jafar Rizvi*, MSc Student, Dept. of Community Health and Epidemiology, University of Saskatchewan. Fell free to knock Rizbi at *jafar.rizvi@usask.ca* if you have any question. 
+
