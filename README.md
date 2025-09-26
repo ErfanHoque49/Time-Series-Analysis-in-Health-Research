@@ -5,4 +5,4 @@ This repository contains materials for the Time Series Analysis in Health Resear
 
 # Key Reference
 
-Forecasting: Principles and Practice (3rd ed) <https://otexts.com/fpp3/>)
+Forecasting: Principles and Practice (3rd ed) <https://otexts.com/fpp3/>
